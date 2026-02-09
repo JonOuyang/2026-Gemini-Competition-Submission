@@ -1,6 +1,6 @@
 # CLOVIS
 ## Computer Linked Overlay Vision Interface System
-To be merged with Jayu, the computer use agent backend. 
+> This is a public checkpoint. This is a limited version of the full code. Please do not expect production ready performance. Best experience with a paid Gemini API key.
 
 ## Installation
 
