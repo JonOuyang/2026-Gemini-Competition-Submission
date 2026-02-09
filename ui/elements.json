@@ -1,0 +1,41 @@
+[
+  {
+    "id": 1,
+    "interactivity": true,
+    "description": "Submit button",
+    "hover-description": "Submit files",
+    "coordinates": {
+      "x": 500,
+      "y": 200,
+      "width": 120,
+      "height": 40
+    },
+    "active": false
+  },
+  {
+    "id": 2,
+    "interactivity": false,
+    "description": "Header text",
+    "hover-description": "Tomato sauce",
+    "coordinates": {
+      "x": 80,
+      "y": 50,
+      "width": 300,
+      "height": 60
+    },
+    "active": false
+  },
+  {
+    "id": 3,
+    "interactivity": true,
+    "description": "Login field",
+    "hover-description": "Fill in username",
+    "coordinates": {
+      "x": 550,
+      "y": 120,
+      "width": 200,
+      "height": 35
+    },
+    "active": false
+  }
+]

@@ -1,0 +1,19 @@
+google-genai
+google-api-core
+pillow
+python-dotenv
+websockets
+
+# CUA Vision Agent dependencies
+pyautogui>=0.9.54
+pygetwindow>=0.0.9
+keyboard>=0.13.5
+numpy>=1.24.0
+
+# Browser Agent dependencies
+browser-use
+playwright
+
+# TTS Integration (ElevenLabs)
+requests>=2.31.0
+python-vlc>=3.0.18122

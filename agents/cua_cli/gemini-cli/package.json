@@ -1,0 +1,48 @@
+{
+  "name": "@google/gemini-cli",
+  "version": "0.29.0",
+  "description": "Gemini CLI - Pruned for CLOVIS integration",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "private": "true",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "start": "node bundle/gemini.js",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "overrides": {
+    "ink": "npm:@jrichman/ink@6.4.8",
+    "wrap-ansi": "9.0.2",
+    "cliui": {
+      "wrap-ansi": "7.0.0"
+    }
+  },
+  "bin": {
+    "gemini": "bundle/gemini.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "esbuild-plugin-wasm": "^1.1.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "ink": "npm:@jrichman/ink@6.4.8",
+    "latest-version": "^9.0.0",
+    "simple-git": "^3.28.0"
+  },
+  "optionalDependencies": {
+    "@lydell/node-pty": "1.1.0",
+    "@lydell/node-pty-darwin-arm64": "1.1.0",
+    "@lydell/node-pty-darwin-x64": "1.1.0",
+    "@lydell/node-pty-linux-x64": "1.1.0",
+    "@lydell/node-pty-win32-arm64": "1.1.0",
+    "@lydell/node-pty-win32-x64": "1.1.0",
+    "node-pty": "^1.0.0"
+  }
+}

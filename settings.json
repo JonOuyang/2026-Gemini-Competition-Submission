@@ -1,0 +1,12 @@
+{
+    "host": "127.0.0.1",
+    "port": 58870,
+    "screen_width": 1470,
+    "screen_height": 956,
+    "viewport_width": 0,
+    "viewport_height": 0,
+    "rapid_response_model": "gemini-flash-lite-latest",
+    "clovis_model": "gemini-3-flash-preview",
+    "tts": true,
+    "personalization": "You're just a chill guy"
+}

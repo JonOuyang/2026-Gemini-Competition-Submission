@@ -1,0 +1,70 @@
+/**
+ * Cursor Status - near-cursor status indicator
+ */
+
+#cursor-status {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  max-width: 320px;
+  padding: 8px 13px;
+  box-sizing: border-box;
+  font-family: "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cursor-text, rgba(242, 245, 248, 0.96));
+  background: var(--cursor-bg, rgba(5, 6, 8, 0.92));
+  border: 1px solid var(--cursor-border, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 26;
+  transform: translate3d(-9999px, -9999px, 0);
+  transition: opacity 0.18s ease;
+  overflow: hidden;
+}
+
+#cursor-status.cursor-status--visible {
+  opacity: 1;
+}
+
+#cursor-status.cursor-status--closing {
+  opacity: 0;
+}
+
+#cursor-status-text {
+  color: var(--cursor-text, rgba(242, 245, 248, 0.96));
+  position: relative;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+#cursor-status-text.cursor-status-text--shimmer::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  background-image: linear-gradient(
+    120deg,
+    rgba(255, 255, 255, 0) 0%,
+    var(--cursor-shimmer, rgba(160, 200, 255, 0.55)) 50%,
+    rgba(255, 255, 255, 0) 60%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: cursor-text-shimmer 2.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes cursor-text-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

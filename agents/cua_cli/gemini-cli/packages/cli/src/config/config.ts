@@ -1,0 +1,673 @@
+/**
+ * @license
+ * Copyright 2025 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import yargs from 'yargs/yargs';
+import { hideBin } from 'yargs/helpers';
+import process from 'node:process';
+import {
+  setGeminiMdFilename as setServerGeminiMdFilename,
+  getCurrentGeminiMdFilename,
+  ApprovalMode,
+  DEFAULT_GEMINI_MODEL_AUTO,
+  DEFAULT_GEMINI_EMBEDDING_MODEL,
+  DEFAULT_FILE_FILTERING_OPTIONS,
+  DEFAULT_MEMORY_FILE_FILTERING_OPTIONS,
+  FileDiscoveryService,
+  WRITE_FILE_TOOL_NAME,
+  SHELL_TOOL_NAMES,
+  SHELL_TOOL_NAME,
+  resolveTelemetrySettings,
+  FatalConfigError,
+  getPty,
+  EDIT_TOOL_NAME,
+  debugLogger,
+  loadServerHierarchicalMemory,
+  WEB_FETCH_TOOL_NAME,
+  ASK_USER_TOOL_NAME,
+  getVersion,
+  PREVIEW_GEMINI_MODEL_AUTO,
+  coreEvents,
+  GEMINI_MODEL_ALIAS_AUTO,
+  ExtensionLoader,
+  Config,
+} from '@google/gemini-cli-core';
+import type {
+  OutputFormat,
+} from '@google/gemini-cli-core';
+import {
+  type Settings,
+  type MergedSettings,
+  saveModelChange,
+  loadSettings,
+} from './settings.js';
+
+import { loadSandboxConfig } from './sandboxConfig.js';
+import { resolvePath } from '../utils/resolvePath.js';
+import { isWorkspaceTrusted } from './trustedFolders.js';
+import { createPolicyEngineConfig } from './policy.js';
+import { runExitCleanup } from '../utils/cleanup.js';
+
+export interface CliArgs {
+  query: string | undefined;
+  model: string | undefined;
+  sandbox: boolean | string | undefined;
+  debug: boolean | undefined;
+  prompt: string | undefined;
+
+  yolo: boolean | undefined;
+  approvalMode: string | undefined;
+  allowedTools: string[] | undefined;
+  includeDirectories: string[] | undefined;
+  screenReader: boolean | undefined;
+  useWriteTodos: boolean | undefined;
+  outputFormat: string | undefined;
+  fakeResponses: string | undefined;
+  recordResponses: string | undefined;
+  startupMessages?: string[];
+  rawOutput: boolean | undefined;
+  acceptRawOutputRisk: boolean | undefined;
+  isCommand: boolean | undefined;
+}
+
+export async function parseArguments(
+  settings: MergedSettings,
+): Promise<CliArgs> {
+  const rawArgv = hideBin(process.argv);
+  const startupMessages: string[] = [];
+  const yargsInstance = yargs(rawArgv)
+    .locale('en')
+    .scriptName('gemini')
+    .usage(
+      'Usage: gemini [options] [command]\n\nGemini CLI - Defaults to interactive mode. Use -p/--prompt for non-interactive (headless) mode.',
+    )
+    .option('debug', {
+      alias: 'd',
+      type: 'boolean',
+      description: 'Run in debug mode (open debug console with F12)',
+      default: false,
+    })
+    .command('$0 [query..]', 'Launch Gemini CLI', (yargsInstance) =>
+      yargsInstance
+        .positional('query', {
+          description:
+            'Initial prompt. Runs in interactive mode by default; use -p/--prompt for non-interactive.',
+        })
+        .option('model', {
+          alias: 'm',
+          type: 'string',
+          nargs: 1,
+          description: `Model`,
+        })
+        .option('prompt', {
+          alias: 'p',
+          type: 'string',
+          nargs: 1,
+          description:
+            'Run in non-interactive (headless) mode with the given prompt. Appended to input on stdin (if any).',
+        })
+        .option('sandbox', {
+          alias: 's',
+          type: 'boolean',
+          description: 'Run in sandbox?',
+        })
+
+        .option('yolo', {
+          alias: 'y',
+          type: 'boolean',
+          description:
+            'Automatically accept all actions (aka YOLO mode, see https://www.youtube.com/watch?v=xvFZjo5PgG0 for more details)?',
+          default: false,
+        })
+        .option('approval-mode', {
+          type: 'string',
+          nargs: 1,
+          choices: ['default', 'auto_edit', 'yolo', 'plan'],
+          description:
+            'Set the approval mode: default (prompt for approval), auto_edit (auto-approve edit tools), yolo (auto-approve all tools), plan (read-only mode)',
+        })
+        .option('allowed-tools', {
+          type: 'array',
+          string: true,
+          nargs: 1,
+          description: 'Tools that are allowed to run without confirmation',
+          coerce: (tools: string[]) =>
+            // Handle comma-separated values
+            tools.flatMap((tool) => tool.split(',').map((t) => t.trim())),
+        })
+        .option('include-directories', {
+          type: 'array',
+          string: true,
+          nargs: 1,
+          description:
+            'Additional directories to include in the workspace (comma-separated or multiple --include-directories)',
+          coerce: (dirs: string[]) =>
+            // Handle comma-separated values
+            dirs.flatMap((dir) => dir.split(',').map((d) => d.trim())),
+        })
+        .option('screen-reader', {
+          type: 'boolean',
+          description: 'Enable screen reader mode for accessibility.',
+        })
+        .option('output-format', {
+          alias: 'o',
+          type: 'string',
+          nargs: 1,
+          description: 'The format of the CLI output.',
+          choices: ['text', 'json', 'stream-json'],
+        })
+        .option('fake-responses', {
+          type: 'string',
+          description: 'Path to a file with fake model responses for testing.',
+          hidden: true,
+        })
+        .option('record-responses', {
+          type: 'string',
+          description: 'Path to a file to record model responses for testing.',
+          hidden: true,
+        })
+        .option('raw-output', {
+          type: 'boolean',
+          description:
+            'Disable sanitization of model output (e.g. allow ANSI escape sequences). WARNING: This can be a security risk if the model output is untrusted.',
+        })
+        .option('accept-raw-output-risk', {
+          type: 'boolean',
+          description: 'Suppress the security warning when using --raw-output.',
+        }),
+    )
+    // Ensure validation flows through .fail() for clean UX
+    .fail((msg, err) => {
+      if (err) throw err;
+      throw new Error(msg);
+    })
+    .check((argv) => {
+      // The 'query' positional can be a string (for one arg) or string[] (for multiple).
+      // This guard safely checks if any positional argument was provided.
+      const query = argv['query'] as string | string[] | undefined;
+      const hasPositionalQuery = Array.isArray(query)
+        ? query.length > 0
+        : !!query;
+
+      if (argv['prompt'] && hasPositionalQuery) {
+        return 'Cannot use both a positional prompt and the --prompt (-p) flag together';
+      }
+      if (argv['yolo'] && argv['approvalMode']) {
+        return 'Cannot use both --yolo (-y) and --approval-mode together. Use --approval-mode=yolo instead.';
+      }
+      if (
+        argv['outputFormat'] &&
+        !['text', 'json', 'stream-json'].includes(
+          argv['outputFormat'] as string,
+        )
+      ) {
+        return `Invalid values:\n  Argument: output-format, Given: "${argv['outputFormat']}", Choices: "text", "json", "stream-json"`;
+      }
+      return true;
+    });
+
+  yargsInstance
+    .version(await getVersion()) // This will enable the --version flag based on package.json
+    .alias('v', 'version')
+    .help()
+    .alias('h', 'help')
+    .strict()
+    .demandCommand(0, 0) // Allow base command to run with no subcommands
+    .exitProcess(false);
+
+  yargsInstance.wrap(yargsInstance.terminalWidth());
+  let result;
+  try {
+    result = await yargsInstance.parse();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    debugLogger.error(msg);
+    yargsInstance.showHelp();
+    await runExitCleanup();
+    process.exit(1);
+  }
+
+  // Handle help and version flags manually since we disabled exitProcess
+  if (result['help'] || result['version']) {
+    await runExitCleanup();
+    process.exit(0);
+  }
+
+  // Normalize query args: handle both quoted "@path file" and unquoted @path file
+  const queryArg = (result as { query?: string | string[] | undefined }).query;
+  const q: string | undefined = Array.isArray(queryArg)
+    ? queryArg.join(' ')
+    : queryArg;
+
+  // -p/--prompt forces non-interactive mode; positional args are treated as prompt input.
+  if (q && !result['prompt']) {
+    result['prompt'] = q;
+  }
+
+  // Keep CliArgs.query as a string for downstream typing
+  (result as Record<string, unknown>)['query'] = q || undefined;
+  (result as Record<string, unknown>)['startupMessages'] = startupMessages;
+
+  // The import format is now only controlled by settings.memoryImportFormat
+  // We no longer accept it as a CLI argument
+  return result as unknown as CliArgs;
+}
+
+/**
+ * Creates a filter function to determine if a tool should be excluded.
+ *
+ * In non-interactive mode, we want to disable tools that require user
+ * interaction to prevent the CLI from hanging. This function creates a predicate
+ * that returns `true` if a tool should be excluded.
+ *
+ * A tool is excluded if it's not in the `allowedToolsSet`. The shell tool
+ * has a special case: it's not excluded if any of its subcommands
+ * are in the `allowedTools` list.
+ *
+ * @param allowedTools A list of explicitly allowed tool names.
+ * @param allowedToolsSet A set of explicitly allowed tool names for quick lookups.
+ * @returns A function that takes a tool name and returns `true` if it should be excluded.
+ */
+function createToolExclusionFilter(
+  allowedTools: string[],
+  allowedToolsSet: Set<string>,
+) {
+  return (tool: string): boolean => {
+    if (tool === SHELL_TOOL_NAME) {
+      // If any of the allowed tools is ShellTool (even with subcommands), don't exclude it.
+      return !allowedTools.some((allowed) =>
+        SHELL_TOOL_NAMES.some((shellName) => allowed.startsWith(shellName)),
+      );
+    }
+    return !allowedToolsSet.has(tool);
+  };
+}
+
+export function isDebugMode(argv: CliArgs): boolean {
+  return (
+    argv.debug ||
+    [process.env['DEBUG'], process.env['DEBUG_MODE']].some(
+      (v) => v === 'true' || v === '1',
+    )
+  );
+}
+
+export interface LoadCliConfigOptions {
+  cwd?: string;
+}
+
+class EmptyExtensionLoader extends ExtensionLoader {
+  getExtensions() {
+    return [];
+  }
+}
+
+export async function loadCliConfig(
+  settings: MergedSettings,
+  sessionId: string,
+  argv: CliArgs,
+  options: LoadCliConfigOptions = {},
+): Promise<Config> {
+  const { cwd = process.cwd() } = options;
+  const debugMode = isDebugMode(argv);
+
+  const loadedSettings = loadSettings(cwd);
+
+  if (argv.sandbox) {
+    process.env['GEMINI_SANDBOX'] = 'true';
+  }
+
+  const memoryImportFormat = settings.context?.importFormat || 'tree';
+
+  const ideMode = settings.ide?.enabled ?? false;
+
+  const folderTrust = settings.security?.folderTrust?.enabled ?? false;
+  const trustedFolder = isWorkspaceTrusted(settings, cwd)?.isTrusted ?? false;
+
+  // Set the context filename in the server's memoryTool module BEFORE loading memory
+  // TODO(b/343434939): This is a bit of a hack. The contextFileName should ideally be passed
+  // directly to the Config constructor in core, and have core handle setGeminiMdFilename.
+  // However, loadHierarchicalGeminiMemory is called *before* createServerConfig.
+  if (settings.context?.fileName) {
+    setServerGeminiMdFilename(settings.context.fileName);
+  } else {
+    // Reset to default if not provided in settings.
+    setServerGeminiMdFilename(getCurrentGeminiMdFilename());
+  }
+
+  const fileService = new FileDiscoveryService(cwd);
+
+  const memoryFileFiltering = {
+    ...DEFAULT_MEMORY_FILE_FILTERING_OPTIONS,
+    ...settings.context?.fileFiltering,
+  };
+
+  const fileFiltering = {
+    ...DEFAULT_FILE_FILTERING_OPTIONS,
+    ...settings.context?.fileFiltering,
+  };
+
+  const includeDirectories = (settings.context?.includeDirectories || [])
+    .map(resolvePath)
+    .concat((argv.includeDirectories || []).map(resolvePath));
+
+  const extensionLoader = new EmptyExtensionLoader();
+
+  const experimentalJitContext = settings.experimental?.jitContext ?? false;
+
+  let memoryContent = '';
+  let fileCount = 0;
+  let filePaths: string[] = [];
+
+  if (!experimentalJitContext) {
+    // Call the (now wrapper) loadHierarchicalGeminiMemory which calls the server's version
+    const result = await loadServerHierarchicalMemory(
+      cwd,
+      settings.context?.loadMemoryFromIncludeDirectories || false
+        ? includeDirectories
+        : [],
+      debugMode,
+      fileService,
+      extensionLoader,
+      trustedFolder,
+      memoryImportFormat,
+      memoryFileFiltering,
+      settings.context?.discoveryMaxDirs,
+    );
+    memoryContent = result.memoryContent;
+    fileCount = result.fileCount;
+    filePaths = result.filePaths;
+  }
+
+  const question = argv.prompt || '';
+
+  // Determine approval mode with backward compatibility
+  let approvalMode: ApprovalMode;
+  const rawApprovalMode =
+    argv.approvalMode ||
+    (argv.yolo ? 'yolo' : undefined) ||
+    ((settings.tools?.approvalMode as string) !== 'yolo'
+      ? settings.tools.approvalMode
+      : undefined);
+
+  if (rawApprovalMode) {
+    switch (rawApprovalMode) {
+      case 'yolo':
+        approvalMode = ApprovalMode.YOLO;
+        break;
+      case 'auto_edit':
+        approvalMode = ApprovalMode.AUTO_EDIT;
+        break;
+      case 'plan':
+        if (!(settings.experimental?.plan ?? false)) {
+          throw new Error(
+            'Approval mode "plan" is only available when experimental.plan is enabled.',
+          );
+        }
+        approvalMode = ApprovalMode.PLAN;
+        break;
+      case 'default':
+        approvalMode = ApprovalMode.DEFAULT;
+        break;
+      default:
+        throw new Error(
+          `Invalid approval mode: ${rawApprovalMode}. Valid values are: yolo, auto_edit, plan, default`,
+        );
+    }
+  } else {
+    approvalMode = ApprovalMode.DEFAULT;
+  }
+
+  // Override approval mode if disableYoloMode is set.
+  if (settings.security?.disableYoloMode || settings.admin?.secureModeEnabled) {
+    if (approvalMode === ApprovalMode.YOLO) {
+      if (settings.admin?.secureModeEnabled) {
+        debugLogger.error(
+          'YOLO mode is disabled by "secureModeEnabled" setting.',
+        );
+      } else {
+        debugLogger.error(
+          'YOLO mode is disabled by the "disableYolo" setting.',
+        );
+      }
+      throw new FatalConfigError(
+        getAdminErrorMessage('YOLO mode', undefined /* config */),
+      );
+    }
+  } else if (approvalMode === ApprovalMode.YOLO) {
+    debugLogger.warn(
+      'YOLO mode is enabled. All tool calls will be automatically approved.',
+    );
+  }
+
+  // Force approval mode to default if the folder is not trusted.
+  if (!trustedFolder && approvalMode !== ApprovalMode.DEFAULT) {
+    debugLogger.warn(
+      `Approval mode overridden to "default" because the current folder is not trusted.`,
+    );
+    approvalMode = ApprovalMode.DEFAULT;
+  }
+
+  let telemetrySettings;
+  try {
+    telemetrySettings = await resolveTelemetrySettings({
+      env: process.env as unknown as Record<string, string | undefined>,
+      settings: settings.telemetry,
+    });
+  } catch (err) {
+    if (err instanceof FatalConfigError) {
+      throw new FatalConfigError(
+        `Invalid telemetry configuration: ${err.message}.`,
+      );
+    }
+    throw err;
+  }
+
+  // Headless-only CLI: always non-interactive.
+  const interactive = false;
+
+  const allowedTools = argv.allowedTools || settings.tools?.allowed || [];
+  const allowedToolsSet = new Set(allowedTools);
+
+  // In non-interactive mode, exclude tools that require a prompt.
+  const extraExcludes: string[] = [];
+  if (!interactive) {
+    // ask_user requires user interaction and must be excluded in all
+    // non-interactive modes, regardless of the approval mode.
+    extraExcludes.push(ASK_USER_TOOL_NAME);
+
+    const defaultExcludes = [
+      SHELL_TOOL_NAME,
+      EDIT_TOOL_NAME,
+      WRITE_FILE_TOOL_NAME,
+      WEB_FETCH_TOOL_NAME,
+    ];
+    const autoEditExcludes = [SHELL_TOOL_NAME];
+
+    const toolExclusionFilter = createToolExclusionFilter(
+      allowedTools,
+      allowedToolsSet,
+    );
+
+    switch (approvalMode) {
+      case ApprovalMode.PLAN:
+        // In plan non-interactive mode, all tools that require approval are excluded.
+        // TODO(#16625): Replace this default exclusion logic with specific rules for plan mode.
+        extraExcludes.push(...defaultExcludes.filter(toolExclusionFilter));
+        break;
+      case ApprovalMode.DEFAULT:
+        // In default non-interactive mode, all tools that require approval are excluded.
+        extraExcludes.push(...defaultExcludes.filter(toolExclusionFilter));
+        break;
+      case ApprovalMode.AUTO_EDIT:
+        // In auto-edit non-interactive mode, only tools that still require a prompt are excluded.
+        extraExcludes.push(...autoEditExcludes.filter(toolExclusionFilter));
+        break;
+      case ApprovalMode.YOLO:
+        // No extra excludes for YOLO mode.
+        break;
+      default:
+        // This should never happen due to validation earlier, but satisfies the linter
+        break;
+    }
+  }
+
+  const excludeTools = mergeExcludeTools(settings, extraExcludes);
+
+  // Create a settings object that includes CLI overrides for policy generation
+  const effectiveSettings: Settings = {
+    ...settings,
+    tools: {
+      ...settings.tools,
+      allowed: allowedTools,
+      exclude: excludeTools,
+    },
+  };
+
+  const policyEngineConfig = await createPolicyEngineConfig(
+    effectiveSettings,
+    approvalMode,
+  );
+  policyEngineConfig.nonInteractive = !interactive;
+
+  const defaultModel = settings.general?.previewFeatures
+    ? PREVIEW_GEMINI_MODEL_AUTO
+    : DEFAULT_GEMINI_MODEL_AUTO;
+  const specifiedModel =
+    argv.model || process.env['GEMINI_MODEL'] || settings.model?.name;
+
+  const resolvedModel =
+    specifiedModel === GEMINI_MODEL_ALIAS_AUTO
+      ? defaultModel
+      : specifiedModel || defaultModel;
+  const sandboxConfig = await loadSandboxConfig(settings, argv);
+  const screenReader =
+    argv.screenReader !== undefined
+      ? argv.screenReader
+      : (settings.ui?.accessibility?.screenReader ?? false);
+
+  const ptyInfo = await getPty();
+
+  const mcpEnabled = false;
+  const extensionsEnabled = false;
+  const adminSkillsEnabled = false;
+  const mcpEnablementCallbacks = undefined;
+  const mcpServerCommand = undefined;
+  const mcpServers = {};
+
+  return new Config({
+    sessionId,
+    clientVersion: await getVersion(),
+    embeddingModel: DEFAULT_GEMINI_EMBEDDING_MODEL,
+    sandbox: sandboxConfig,
+    targetDir: cwd,
+    includeDirectories,
+    loadMemoryFromIncludeDirectories:
+      settings.context?.loadMemoryFromIncludeDirectories || false,
+    debugMode,
+    question,
+    previewFeatures: settings.general?.previewFeatures,
+
+    coreTools: settings.tools?.core || undefined,
+    allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
+    policyEngineConfig,
+    excludeTools,
+    toolDiscoveryCommand: settings.tools?.discoveryCommand,
+    toolCallCommand: settings.tools?.callCommand,
+    mcpServerCommand,
+    mcpServers,
+    mcpEnablementCallbacks,
+    mcpEnabled,
+    extensionsEnabled,
+    agents: settings.agents,
+    adminSkillsEnabled,
+    blockedEnvironmentVariables:
+      settings.security?.environmentVariableRedaction?.blocked,
+    enableEnvironmentVariableRedaction:
+      settings.security?.environmentVariableRedaction?.enabled,
+    userMemory: memoryContent,
+    geminiMdFileCount: fileCount,
+    geminiMdFilePaths: filePaths,
+    approvalMode,
+    disableYoloMode:
+      settings.security?.disableYoloMode || settings.admin?.secureModeEnabled,
+    showMemoryUsage: settings.ui?.showMemoryUsage || false,
+    accessibility: {
+      ...settings.ui?.accessibility,
+      screenReader,
+    },
+    telemetry: telemetrySettings,
+    usageStatisticsEnabled: settings.privacy?.usageStatisticsEnabled,
+    fileFiltering,
+    checkpointing: settings.general?.checkpointing?.enabled,
+    proxy:
+      process.env['HTTPS_PROXY'] ||
+      process.env['https_proxy'] ||
+      process.env['HTTP_PROXY'] ||
+      process.env['http_proxy'],
+    cwd,
+    fileDiscoveryService: fileService,
+    bugCommand: settings.advanced?.bugCommand,
+    model: resolvedModel,
+    maxSessionTurns: settings.model?.maxSessionTurns,
+    extensionLoader,
+    enableAgents: settings.experimental?.enableAgents,
+    plan: settings.experimental?.plan,
+    enableEventDrivenScheduler:
+      settings.experimental?.enableEventDrivenScheduler,
+    skillsSupport: false,
+    disabledSkills: [],
+    experimentalJitContext: settings.experimental?.jitContext,
+    noBrowser: !!process.env['NO_BROWSER'],
+    summarizeToolOutput: settings.model?.summarizeToolOutput,
+    ideMode,
+    disableLoopDetection: settings.model?.disableLoopDetection,
+    compressionThreshold: settings.model?.compressionThreshold,
+    folderTrust,
+    interactive,
+    trustedFolder,
+    useBackgroundColor: settings.ui?.useBackgroundColor,
+    useRipgrep: settings.tools?.useRipgrep,
+    enableInteractiveShell: settings.tools?.shell?.enableInteractiveShell,
+    shellToolInactivityTimeout: settings.tools?.shell?.inactivityTimeout,
+    enableShellOutputEfficiency:
+      settings.tools?.shell?.enableShellOutputEfficiency ?? true,
+    skipNextSpeakerCheck: settings.model?.skipNextSpeakerCheck,
+    enablePromptCompletion: settings.general?.enablePromptCompletion,
+    truncateToolOutputThreshold: settings.tools?.truncateToolOutputThreshold,
+    truncateToolOutputLines: settings.tools?.truncateToolOutputLines,
+    enableToolOutputTruncation: settings.tools?.enableToolOutputTruncation,
+    eventEmitter: coreEvents,
+    useWriteTodos: argv.useWriteTodos ?? settings.useWriteTodos,
+    output: {
+      format: (argv.outputFormat ?? settings.output?.format) as OutputFormat,
+    },
+    fakeResponses: argv.fakeResponses,
+    recordResponses: argv.recordResponses,
+    retryFetchErrors: settings.general?.retryFetchErrors,
+    ptyInfo: ptyInfo?.name,
+    disableLLMCorrection: settings.tools?.disableLLMCorrection,
+    rawOutput: argv.rawOutput,
+    acceptRawOutputRisk: argv.acceptRawOutputRisk,
+    modelConfigServiceConfig: settings.modelConfigs,
+    enableHooks: false,
+    enableHooksUI: false,
+    hooks: {},
+    disabledHooks: [],
+    onModelChange: (model: string) => saveModelChange(loadedSettings, model),
+    onReload: undefined,
+  });
+}
+
+function mergeExcludeTools(
+  settings: MergedSettings,
+  extraExcludes: string[] = [],
+): string[] {
+  const allExcludeTools = new Set([
+    ...(settings.tools.exclude || []),
+    ...extraExcludes,
+  ]);
+  return Array.from(allExcludeTools);
+}

@@ -1,0 +1,37 @@
+#screen-glow {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  border: 8px solid rgba(20, 150, 255, 0.85);
+  box-shadow:
+    0 0 26px rgba(20, 150, 255, 0.7),
+    0 0 90px rgba(20, 150, 255, 0.55);
+  border-radius: 20px;
+}
+
+#screen-glow.active {
+  animation: screen-glow-fade-in 1.5s ease-out forwards;
+}
+
+#screen-glow.closing {
+  animation: screen-glow-fade-out 1.5s ease-out forwards;
+}
+
+@keyframes screen-glow-fade-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes screen-glow-fade-out {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
